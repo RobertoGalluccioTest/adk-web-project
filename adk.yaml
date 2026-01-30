@@ -1,0 +1,11 @@
+
+project:
+  name: adk-web-project
+  version: 1.0.0
+
+web:
+  enabled: true
+  entrypoint: server.py
+
+agents:
+  - path: agents/pdf_parameter_agent/agent.yaml

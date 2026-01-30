@@ -1,0 +1,12 @@
+
+ame: pdf_parameter_agent
+description: "Agent combining parameter table with tables extracted from PDF"
+entrypoint: agent.py
+version: "1.0"
+model: "gemini-2.5-flash"
+
+tools:
+  - load_parameter_table
+  - extract_pdf_tables
+  - combine_and_match
+  - save_csv_output

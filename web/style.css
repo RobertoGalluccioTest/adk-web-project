@@ -1,0 +1,8 @@
+body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
+main { max-width: 800px; margin: 40px auto; padding: 0 16px; }
+h1 { font-size: 24px; margin-bottom: 16px; }
+.card { background: #111827; border: 1px solid #1f2937; border-radius: 8px; padding: 16px; }
+label { display: block; margin-top: 12px; margin-bottom: 6px; color: #cbd5e1; }
+input[type="file"], input[type="text"] { width: 100%; padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1220; color: #e2e8f0; }
+button { margin-top: 16px; padding: 10px 16px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; }
+pre { margin-top: 16px; background: #0b1220; padding: 12px; border-radius: 6px; border: 1px solid #334155; overflow: auto; }

@@ -1,0 +1,22 @@
+# Core
+pandas==2.2.3
+numpy>=1.26.0
+openpyxl==3.1.5
+
+# PDF extraction
+camelot-py==0.11.0
+pdfplumber==0.11.4
+tabula-py==2.10.0
+
+# Server
+fastapi==0.115.5
+uvicorn==0.32.0
+python-multipart==0.0.9
+
+# ADK Agent (assuming this is provided in your env)
+# If your environment provides the google.adk package, you may not need to pip install it.
+# google-adk==<your-version>
+
+# Optional: lint/testing
+pytest==8.3.3
+python-dotenv==1.0.1
