@@ -12,8 +12,8 @@ async function runAgent() {
     }
 
     const form = new FormData();
-    form.append("params_file", params);
-    form.append("pdf_file", pdf);
+    form.append("params_file", params, params.name);
+    form.append("pdf_file", pdf, pdf.name);
     form.append("key", key);
 
     try {

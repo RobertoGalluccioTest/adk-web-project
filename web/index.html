@@ -3,27 +3,29 @@
 <head>
     <meta charset="utf-8">
     <title>ADK Web – PDF Parameter Agent</title>
-    <link rel="</head>
+    <link rel=”stylesheet” href=”/static/style.css”>
+</head>
 <body>
-  <main>
+<main>
     <h1>PDF Parameter Merge Agent</h1>
 
     <section class="card">
-    <label>Parameter Table (CSV/XLSX):</label>
-    <input type="file" id="params" accept=".csv,.xlsx" />
+        <label>Parameter Table (CSV/XLSX):</label>
+        <input type="file" id="params" accept=".csv,.xlsx" />
 
-    <label>PDF (with two tables):</label>
-    <input type="file" id="pdf" accept=".pdf" />
+        <label>PDF (with two tables):</label>
+        <input type="file" id="pdf" accept=".pdf" />
 
-    <label>Optional Join Key (column name):</label>
-    <input type="text" id="key" placeholder="e.g., id"/>
+        <label>Optional Join Key (column name):</label>
+        <input type="text" id="key" placeholder="e.g., id"/>
 
-    <button id="run">Run Agent</button>
+        <button id="run">Run Agent</button>
 
-    <pre id="output"></pre>
+        <pre id="output"></pre>
     </section>
-    </main>
+</main>
 
-    main.js</script>
-    </body>
+<!-- CARICAMENTO CORRETTO DELLO SCRIPT -->
+<script src="/static/main.js"></script>
+</body>
 </html>
