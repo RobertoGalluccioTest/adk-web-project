@@ -3,6 +3,8 @@ import os
 import uuid
 import shutil
 import logging
+import inspect
+import google.adk as google_adk
 from typing import List, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -12,8 +14,9 @@ from fastapi.responses import FileResponse, JSONResponse
 
 # ADK: Runner config e tuo agent
 from google.adk.agents import RunConfig
+from google.adk.cli.fast_api import get_fast_api_app
 from agents.pdf_parameter_agent.agent import processor_agent
-
+from google.adk.tools.agent_tool import AgentTool
 from google.adk.runners import InMemoryRunner, Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.artifacts import InMemoryArtifactService
@@ -30,7 +33,13 @@ except Exception:
 # -----------------------------------------------------------------------------
 # App & Logging
 # -----------------------------------------------------------------------------
-app = FastAPI(title="ADK Web Project – PDF Agent")
+# Crea l'app FastAPI preconfigurata da ADK
+app: FastAPI = get_fast_api_app(
+    agents_dir="./agents/pdf_parameter_agent", # Cartella contenente i tuoi agenti
+    web=True # Abilita anche la Web UI di debug
+)
+session_service = InMemorySessionService()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -116,6 +125,177 @@ def _event_to_dict(ev) -> Dict[str, Any]:
         return data
     except Exception:
         return {"raw": str(ev)}
+    
+    
+# Servizi opzionali: alcune versioni non li espongono o cambiano modulo
+try:
+    from google.adk.artifacts import InMemoryArtifactService as _InMemArtifact
+except Exception:
+    _InMemArtifact = None
+
+try:
+    from google.adk.sessions import InMemorySessionService as _InMemSession
+except Exception:
+    _InMemSession = None
+
+
+# def make_runner(processor_agent):
+#     """
+#     Crea un InMemoryRunner compatibile con diverse versioni di google-adk.
+#     Tenta di passare artifact_service/session_service se supportati;
+#     altrimenti degrada a costruttore minimale.
+#     """
+#     try:
+#         sig = inspect.signature(InMemoryRunner)
+#         params = sig.parameters
+#         logger.info("InMemoryRunner signature: %s", sig)
+#     except Exception as e:
+#         logger.warning("Impossibile ispezionare InMemoryRunner: %s", e)
+#         params = {}
+
+#     # Prova con artifact_service se disponibile
+#     if "artifact_service" in params and _InMemArtifact is not None:
+#         try:
+#             return InMemoryRunner(agent=processor_agent, artifact_service=_InMemArtifact())
+#         except TypeError as te:
+#             logger.warning("TypeError con artifact_service: %s. Fallback...", te)
+
+#     # Prova con session_service per versioni più vecchie
+#     if "session_service" in params and _InMemSession is not None:
+#         try:
+#             return InMemoryRunner(agent=processor_agent, session_service=_InMemSession())
+#         except TypeError as te:
+#             logger.warning("TypeError con session_service: %s. Fallback...", te)
+
+#     # Fallback: solo agent (kw) oppure posizionale
+#     try:
+#         return InMemoryRunner(agent=processor_agent)
+#     except TypeError:
+#         return InMemoryRunner(processor_agent)
+
+
+SUPPORTED_MSG_KEYS = ("message", "input", "prompt", "text", "query", "content")
+
+async def iter_runner_events(runner, user_id: str, session_id: str, message: str):
+    """
+    Esegue runner.run_async in modo compatibile con diverse versioni di google-adk.
+    Ordine dei tentativi:
+      1) Passa il contenuto con uno tra: message/input/prompt/text/query/content, se supportato.
+      2) Usa RunConfig tramite 'config' o 'run_config', se supportato.
+      3) Pre-inietta (se runner espone metodi/servizi adatti), poi chiama run_async senza contenuto.
+      4) Fallback: run_async(**kwargs base) o senza kwargs.
+    """
+    # 0) Firma di run_async
+    try:
+        sig = inspect.signature(runner.run_async)
+        params = sig.parameters
+        logger.info("runner.run_async signature: %s", sig)
+    except Exception as e:
+        logger.warning("Impossibile ispezionare runner.run_async: %s", e)
+        params = {}
+
+    # 1) user_id / session_id se supportati
+    base_kwargs = {}
+    if "user_id" in params:
+        base_kwargs["user_id"] = user_id
+    if "session_id" in params:
+        base_kwargs["session_id"] = session_id
+
+    # 2) Prova i nomi di parametro "messaggio"
+    for key in SUPPORTED_MSG_KEYS:
+        if key in params:
+            try:
+                logger.info("Invoco run_async con kwarg contenuto: %s", key)
+                async for ev in runner.run_async(**base_kwargs, **{key: message}):
+                    yield _event_to_dict(ev)
+                return
+            except TypeError as te:
+                logger.warning("TypeError con '%s': %s. Provo altro nome...", key, te)
+            except Exception as e:
+                logger.exception("Errore run_async(%s=...): %s", key, e)
+                raise
+
+    # 3) Prova con RunConfig (config/run_config)
+    #    Costruisco dinamicamente l'oggetto RunConfig con i campi supportati
+    try:
+        rc_sig = inspect.signature(RunConfig)
+        rc_params = rc_sig.parameters
+    except Exception:
+        rc_params = {}
+
+    config_kwargs = {}
+    # user_id/session_id se previsti da RunConfig
+    if "user_id" in rc_params:
+        config_kwargs["user_id"] = user_id
+    if "session_id" in rc_params:
+        config_kwargs["session_id"] = session_id
+    # campo di input messaggio in RunConfig (scegli il primo disponibile)
+    for msg_key in SUPPORTED_MSG_KEYS:
+        if msg_key in rc_params:
+            config_kwargs[msg_key] = message
+            break
+
+    runconfig_obj = None
+    if config_kwargs:
+        try:
+            runconfig_obj = RunConfig(**config_kwargs)
+        except Exception as e:
+            logger.warning("Creazione RunConfig(**%s) fallita: %s", config_kwargs, e)
+
+    # 'config' o 'run_config' in run_async?
+    for conf_name in ("config", "run_config"):
+        if conf_name in params and runconfig_obj is not None:
+            try:
+                logger.info("Invoco run_async con %s=RunConfig(...)", conf_name)
+                async for ev in runner.run_async(**base_kwargs, **{conf_name: runconfig_obj}):
+                    yield _event_to_dict(ev)
+                return
+            except TypeError as te:
+                logger.warning("TypeError con %s=RunConfig: %s. Provo fallback...", conf_name, te)
+            except Exception as e:
+                logger.exception("Errore run_async con %s: %s", conf_name, e)
+                raise
+
+    # 4) Pre-iniezione messaggio e run senza contenuto
+    pre_injected = False
+    try:
+        if hasattr(runner, "add_user_message"):
+            logger.info("Pre-inietto con runner.add_user_message(...)")
+            await runner.add_user_message(user_id=user_id, session_id=session_id, message=message)
+            pre_injected = True
+        elif hasattr(runner, "add_user_event"):
+            logger.info("Pre-inietto con runner.add_user_event(...)")
+            await runner.add_user_event(user_id=user_id, session_id=session_id, message=message)
+            pre_injected = True
+        elif hasattr(runner, "message_service"):
+            ms = runner.message_service
+            if hasattr(ms, "create_user_message"):
+                logger.info("Pre-inietto con message_service.create_user_message(...)")
+                await ms.create_user_message(user_id=user_id, session_id=session_id, message=message)
+                pre_injected = True
+            elif hasattr(ms, "append"):
+                logger.info("Pre-inietto con message_service.append(...)")
+                await ms.append(user_id=user_id, session_id=session_id, role="user", content=message)
+                pre_injected = True
+    except Exception as e:
+        logger.warning("Pre-iniezione fallita (procedo comunque): %s", e)
+
+    # 5) run_async senza contenuto
+    try:
+        if pre_injected:
+            logger.info("Chiamo run_async senza contenuto (messaggio pre-iniettato).")
+        else:
+            logger.info("Chiamo run_async senza contenuto (nessun parametro messaggio supportato).")
+
+        async for ev in runner.run_async(**base_kwargs):
+            yield _event_to_dict(ev)
+        return
+    except TypeError as te:
+        logger.warning("TypeError run_async(**base_kwargs): %s. Ritento senza kwargs.", te)
+        async for ev in runner.run_async():
+            yield _event_to_dict(ev)
+
+
 
 # -----------------------------------------------------------------------------
 # Endpoint principale: esegue l'agente ADK
@@ -150,19 +330,26 @@ async def run_agent(
     params_path = os.path.join(job_input_dir, params_file.filename)
     pdf_path = os.path.join(job_input_dir, pdf_file.filename)
 
-    try:
-        with open(params_path, "wb") as f:
-            shutil.copyfileobj(params_file.file, f)
-        with open(pdf_path, "wb") as f:
-            shutil.copyfileobj(pdf_file.file, f)
-    finally:
-        # chiude gli stream UploadFile per evitare file descriptor leak
-        await params_file.close()
-        await pdf_file.close()
-
     params_path_n = params_path.replace("\\", "/")
     pdf_path_n = pdf_path.replace("\\", "/")
     job_output_dir_n = job_output_dir.replace("\\", "/")
+
+    try:
+        csv_bytes = await params_file.read()
+        pdf_bytes = await pdf_file.read()
+
+        contentCSV = csv_bytes.decode("utf-8")     # OK
+        contentPDF = pdf_bytes                     # PDF → binario
+
+        with open(params_path, "wb") as f:
+            f.write(csv_bytes)
+
+        with open(pdf_path, "wb") as f:
+            f.write(pdf_bytes)
+
+    finally:
+        await params_file.close()
+        await pdf_file.close()
 
     logger.info(f"💾 Salvati: {params_path_n} | {pdf_path_n}")
     logger.info(f"📂 Output previsto: {job_output_dir_n}")
@@ -177,49 +364,54 @@ async def run_agent(
         f"Chiave opzionale: '{key}'."
     )
     logger.info(f" message: {message}")
-
-    # Runner “in-memory” per orchestrare l’esecuzione
-    runner = InMemoryRunner(
-        agent=processor_agent,
-        session_service=InMemorySessionService(),
-        artifact_service=InMemoryArtifactService(),
-    )
-
-
-    # --- 4) Esecuzione agente ADK (senza RunConfig) -----------------------------
-
-    events: List[Dict[str, Any]] = []
+ 
     try:
-        async for ev in runner.run_async(
-                user_id="web",
-                session_id=job_id,  # così colleghi input/output a questa invocazione
-                message=message,    # <--- passa il messaggio qui
-        ):
-            events.append(_event_to_dict(ev))
+
+
+       # Avvia una sessione e passa i contenuti nello 'state'
+        session = await session_service.create_session(
+            app_name="FileApp", 
+            user_id="web",
+            state={"file1_data": contentCSV, "file2_data": contentPDF}
+        )
+        runner = Runner(agent=processor_agent, app_name="FileApp", session_service=session_service)
+        content = types.Content(role='user', parts=[types.Part(text=message)]) 
+        # Esegui l'agente
+        response_text = ""
+        events = runner.run_async(session_id=session.id, user_id="web", new_message=content)
+        async for eve in events:
+            if eve.is_final_response():
+                #if eve.content and eve.content.parts:
+                response_text = eve.content.parts[0].text
+
+        return {"response": response_text}
+        
     except Exception as e:
         logger.exception("❌ Errore durante l'esecuzione dell'agente ADK (Runner)")
         raise HTTPException(status_code=500, detail=f"Errore agente: {e}")
 
-    # --- 5) Elenco dei file prodotti -----------------------------------------
-    produced_files: List[str] = []
-    for root, _, files in os.walk(job_output_dir_n):
-        for name in files:
-            produced_files.append(os.path.relpath(os.path.join(root, name), job_output_dir_n))
 
-    # --- 6) Estrazione testo finale ------------------------------------------
-    final_text = None
-    for ev in reversed(events):
-        if ev.get("is_final_response"):
-            final_text = ev.get("text") or ev.get("content")
-            break
 
-    # --- 7) Risposta ----------------------------------------------------------
-    payload: Dict[str, Any] = {
-        "job_id": job_id,
-        "input": {"params_path_n": params_path_n, "pdf_path_n": pdf_path_n},
-        "output_dir": job_output_dir_n,
-        "produced_files": produced_files,
-        "final_text": final_text,
-        "events": events[-50:],  # limito la risposta
-    }
-    return JSONResponse(content=payload, status_code=200)
+    # # --- 5) Elenco dei file prodotti -----------------------------------------
+    # produced_files=[]
+    # for root, _, files in os.walk(job_output_dir_n):
+    #     for name in files:
+    #         produced_files.append(os.path.relpath(os.path.join(root, name), job_output_dir_n))
+
+    # # --- 6) Estrazione testo finale ------------------------------------------
+    # final_text = None
+    # for ev in reversed(events):
+    #     if ev.get("is_final_response"):
+    #         final_text = ev.get("text") or ev.get("content")
+    #         break
+
+    # # --- 7) Risposta ----------------------------------------------------------
+    # payload: Dict[str, Any] = {
+    #     "job_id": job_id,
+    #     "input": {"params_path_n": params_path_n, "pdf_path_n": pdf_path_n},
+    #     "output_dir": job_output_dir_n,
+    #     "produced_files": produced_files,
+    #     "final_text": final_text,
+    #     "events": events[-50:]  # limito la risposta
+    # }
+    # return JSONResponse(content=payload, status_code=200)
