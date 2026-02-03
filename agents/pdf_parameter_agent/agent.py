@@ -1,3 +1,4 @@
+"""This is the Agent-py file which creates the agent as processor_agent"""
 import os
 from google.adk.agents import Agent
 from .tools import (
@@ -8,10 +9,18 @@ from .tools import (
 )
 
 def _load_prompt() -> str:
-    here = os.path.dirname(__file__)
-    with open(os.path.join(here, "prompt.md"), "r", encoding="utf-8") as f:
-        return f.read()
+    """Load a prompt from a file.
 
+    Returns:
+        str: return the prompt text.
+    """
+    pwd = os.path.dirname(__file__)
+    prompt_text = ""
+    with open(os.path.join(pwd, "prompt.md"), "r", encoding="utf-8") as f:
+        prompt_text = f.read()
+    return prompt_text
+
+# Create a processor_angent (this is a single agent app)
 processor_agent = Agent(
     name="pdf_parameter_agent",
     description="Merges parameter table with two PDF tables and saves CSV",

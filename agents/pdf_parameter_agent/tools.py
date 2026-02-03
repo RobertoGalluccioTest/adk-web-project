@@ -1,6 +1,9 @@
+"""This is tools.py file"""
 import os
+import itertools
 import pandas as pd
 import pdfplumber
+
 
 # Camelot is optional and can fail on some PDFs; we try it first if available
 try:
@@ -72,7 +75,8 @@ def extract_pdf_tables(pdf_path: str, table_indexes: list | None = None):
                     header = tbl[0]
                     rows = tbl[1:]
                     # Normalize header (deduplicate None, '')
-                    header = [h if h not in (None, "") else f"col_{i}" for i, h in enumerate(header)]
+                    header = [h if h not in (None, "") else f"col_{i}" for i,
+                              h in enumerate(header)]
                     recs = [dict(zip(header, r)) for r in rows]
                     tables_as_records.append(recs)
 
@@ -91,25 +95,27 @@ def extract_pdf_tables(pdf_path: str, table_indexes: list | None = None):
     try:
         t1 = tables_as_records[idx1]
         t2 = tables_as_records[idx2]
-    except Exception:
-        raise ValueError("Could not select two tables from extracted results.")
+    except Exception as ex:
+        raise ValueError("Could not select two tables from extracted results.") from ex
 
     return {"table1": t1, "table2": t2}
 
 
-def combine_and_match(param_rows: list[dict], table1_rows: list[dict], table2_rows: list[dict], key: str | None = None):
+def combine_and_match(param_rows: list[dict],
+                      table1_rows: list[dict],
+                      table2_rows: list[dict],
+                      key: str | None = None):
     """
     Deterministically merge:
     - Identify a join key:
         1) If key provided and present in param_rows columns -> use it.
-        2) Else use the first common column name shared by param_rows and table1_rows or table2_rows.
+        2) Else use the first common column name shared by param_rows 
+        and table1_rows or table2_rows.
         3) Else fallback to the first column of param_rows.
     - Build merged rows: param + best match from t1 + best match from t2.
       Columns from t1 prefixed as 't1_' and from t2 as 't2_' to avoid collisions.
     Returns: list[dict]
     """
-    import itertools
-
     def cols(rows):
         return set(itertools.chain.from_iterable(r.keys() for r in rows)) if rows else set()
 

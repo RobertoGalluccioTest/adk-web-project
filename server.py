@@ -1,45 +1,43 @@
-# server.py
+"""This is FastAPI app: server.py
+"""
 import os
 import uuid
-import shutil
 import logging
 import inspect
-import google.adk as google_adk
-from typing import List, Dict, Any
+from typing import Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
-
-# ADK: Runner config e tuo agent
+from fastapi.responses import FileResponse
 from google.adk.agents import RunConfig
 from google.adk.cli.fast_api import get_fast_api_app
-from agents.pdf_parameter_agent.agent import processor_agent
-from google.adk.tools.agent_tool import AgentTool
-from google.adk.runners import InMemoryRunner, Runner
+from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
-from google.adk.artifacts import InMemoryArtifactService
 from google.genai import types
+from agents.pdf_parameter_agent.agent import processor_agent
+
 # -----------------------------------------------------------------------------
 # (Opzionale) Carica le variabili da .env (GOOGLE_API_KEY, GOOGLE_CLOUD_PROJECT)
 # -----------------------------------------------------------------------------
 try:
     from dotenv import load_dotenv
     load_dotenv()
-except Exception:
+except Exception as ex:
     pass
 
 # -----------------------------------------------------------------------------
-# App & Logging
+# Web App FastAPI
 # -----------------------------------------------------------------------------
 # Crea l'app FastAPI preconfigurata da ADK
 app: FastAPI = get_fast_api_app(
     agents_dir="./agents/pdf_parameter_agent", # Cartella contenente i tuoi agenti
     web=True # Abilita anche la Web UI di debug
 )
+# Crea un servizio per la gestione delle sessini (InMemory perchè in locale)
 session_service = InMemorySessionService()
 
+# Logging config
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -54,6 +52,10 @@ os.makedirs(DATA_OUTPUT_DIR, exist_ok=True)
 
 # Statici sotto /static (non montare su "/")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+# Constants for Message Keys
+SUPPORTED_MSG_KEYS = ("message", "input", "prompt", "text", "query", "content")
+
 
 # -----------------------------------------------------------------------------
 # Routes base
@@ -74,13 +76,20 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    """StartUp. logging some info.
+    """
     logger.info("🟢 Server FastAPI avviato e pronto!")
     logger.info("🌍 Endpoint: http://localhost:8000/run-agent")
-    logger.info(f"📁 Input directory:  {os.path.abspath(DATA_INPUT_DIR)}")
-    logger.info(f"📁 Output directory: {os.path.abspath(DATA_OUTPUT_DIR)}")
+    logger.info("📁 Input directory: %s", os.path.abspath(DATA_INPUT_DIR))
+    logger.info("📁 Output directory: %s", os.path.abspath(DATA_OUTPUT_DIR))
 
 @app.get("/ping")
 async def ping():
+    """Ping API to verify webserver healthy state
+
+    Returns:
+        dict: status ok, whether the Webserver is up and runnning.
+    """
     return {"status": "ok"}
 
 # -----------------------------------------------------------------------------
@@ -93,8 +102,7 @@ def _event_to_dict(ev) -> Dict[str, Any]:
     - tool calls / tool responses
     - flag di 'final response'
     """
-    try:
-        data: Dict[str, Any] = {
+    data: Dict[str, Any] = {
             "id": getattr(ev, "id", None),
             "author": getattr(ev, "author", None),
             "is_final_response": False,
@@ -103,6 +111,7 @@ def _event_to_dict(ev) -> Dict[str, Any]:
             "content": None,
             "text": None,
         }
+    try:
         if hasattr(ev, "get_function_calls"):
             data["function_calls"] = ev.get_function_calls() or []
         if hasattr(ev, "get_function_responses"):
@@ -121,64 +130,13 @@ def _event_to_dict(ev) -> Dict[str, Any]:
                 data["text"] = parts[0].text
         except Exception:
             pass
-
-        return data
     except Exception:
         return {"raw": str(ev)}
-    
-    
-# Servizi opzionali: alcune versioni non li espongono o cambiano modulo
-try:
-    from google.adk.artifacts import InMemoryArtifactService as _InMemArtifact
-except Exception:
-    _InMemArtifact = None
+    return data
 
-try:
-    from google.adk.sessions import InMemorySessionService as _InMemSession
-except Exception:
-    _InMemSession = None
-
-
-# def make_runner(processor_agent):
-#     """
-#     Crea un InMemoryRunner compatibile con diverse versioni di google-adk.
-#     Tenta di passare artifact_service/session_service se supportati;
-#     altrimenti degrada a costruttore minimale.
-#     """
-#     try:
-#         sig = inspect.signature(InMemoryRunner)
-#         params = sig.parameters
-#         logger.info("InMemoryRunner signature: %s", sig)
-#     except Exception as e:
-#         logger.warning("Impossibile ispezionare InMemoryRunner: %s", e)
-#         params = {}
-
-#     # Prova con artifact_service se disponibile
-#     if "artifact_service" in params and _InMemArtifact is not None:
-#         try:
-#             return InMemoryRunner(agent=processor_agent, artifact_service=_InMemArtifact())
-#         except TypeError as te:
-#             logger.warning("TypeError con artifact_service: %s. Fallback...", te)
-
-#     # Prova con session_service per versioni più vecchie
-#     if "session_service" in params and _InMemSession is not None:
-#         try:
-#             return InMemoryRunner(agent=processor_agent, session_service=_InMemSession())
-#         except TypeError as te:
-#             logger.warning("TypeError con session_service: %s. Fallback...", te)
-
-#     # Fallback: solo agent (kw) oppure posizionale
-#     try:
-#         return InMemoryRunner(agent=processor_agent)
-#     except TypeError:
-#         return InMemoryRunner(processor_agent)
-
-
-SUPPORTED_MSG_KEYS = ("message", "input", "prompt", "text", "query", "content")
 
 async def iter_runner_events(runner, user_id: str, session_id: str, message: str):
-    """
-    Esegue runner.run_async in modo compatibile con diverse versioni di google-adk.
+    """Esegue runner.run_async in modo compatibile con diverse versioni di google-adk.
     Ordine dei tentativi:
       1) Passa il contenuto con uno tra: message/input/prompt/text/query/content, se supportato.
       2) Usa RunConfig tramite 'config' o 'run_config', se supportato.
@@ -190,8 +148,8 @@ async def iter_runner_events(runner, user_id: str, session_id: str, message: str
         sig = inspect.signature(runner.run_async)
         params = sig.parameters
         logger.info("runner.run_async signature: %s", sig)
-    except Exception as e:
-        logger.warning("Impossibile ispezionare runner.run_async: %s", e)
+    except Exception as ex:
+        logger.warning("Impossibile ispezionare runner.run_async: %s", ex)
         params = {}
 
     # 1) user_id / session_id se supportati
@@ -222,7 +180,6 @@ async def iter_runner_events(runner, user_id: str, session_id: str, message: str
         rc_params = rc_sig.parameters
     except Exception:
         rc_params = {}
-
     config_kwargs = {}
     # user_id/session_id se previsti da RunConfig
     if "user_id" in rc_params:
@@ -271,11 +228,16 @@ async def iter_runner_events(runner, user_id: str, session_id: str, message: str
             ms = runner.message_service
             if hasattr(ms, "create_user_message"):
                 logger.info("Pre-inietto con message_service.create_user_message(...)")
-                await ms.create_user_message(user_id=user_id, session_id=session_id, message=message)
+                await ms.create_user_message(user_id=user_id,
+                                             session_id=session_id,
+                                             message=message)
                 pre_injected = True
             elif hasattr(ms, "append"):
                 logger.info("Pre-inietto con message_service.append(...)")
-                await ms.append(user_id=user_id, session_id=session_id, role="user", content=message)
+                await ms.append(user_id=user_id,
+                                session_id=session_id,
+                                role="user",
+                                content=message)
                 pre_injected = True
     except Exception as e:
         logger.warning("Pre-iniezione fallita (procedo comunque): %s", e)
@@ -301,11 +263,24 @@ async def iter_runner_events(runner, user_id: str, session_id: str, message: str
 # Endpoint principale: esegue l'agente ADK
 # -----------------------------------------------------------------------------
 @app.post("/run-agent")
-async def run_agent(
-        params_file: UploadFile = File(...),
-        pdf_file: UploadFile = File(...),
-        key: str = Form(default="")
-):
+async def run_agent(params_file: UploadFile = File(...),
+                    pdf_file: UploadFile = File(...),
+                    key: str = Form(default="")):
+    """Run the Agent passing the right set of parameters
+
+    Args:
+        params_file (UploadFile, optional): _description_. Defaults to File(...).
+        pdf_file (UploadFile, optional): _description_. Defaults to File(...).
+        key (str, optional): _description_. Defaults to Form(default="").
+
+    Raises:
+        HTTPException: _description_
+        HTTPException: _description_
+        HTTPException: _description_
+
+    Returns:
+        _type_: _description_
+    """
     logger.info("▶️ run-agent: richiesta ricevuta")
 
     # --- 1) Validazioni -------------------------------------------------------
@@ -337,22 +312,17 @@ async def run_agent(
     try:
         csv_bytes = await params_file.read()
         pdf_bytes = await pdf_file.read()
-
-        contentCSV = csv_bytes.decode("utf-8")     # OK
-        contentPDF = pdf_bytes                     # PDF → binario
-
+        content_csv = csv_bytes.decode("utf-8")     # OK
+        content_pdf = pdf_bytes                     # PDF → binario
         with open(params_path, "wb") as f:
             f.write(csv_bytes)
-
         with open(pdf_path, "wb") as f:
             f.write(pdf_bytes)
-
     finally:
         await params_file.close()
         await pdf_file.close()
-
-    logger.info(f"💾 Salvati: {params_path_n} | {pdf_path_n}")
-    logger.info(f"📂 Output previsto: {job_output_dir_n}")
+    logger.info("💾 Salvati: %s | %s", params_path_n, pdf_path_n)
+    logger.info("📂 Output previsto: %s", job_output_dir_n)
 
     # --- 3) Prompt di tasking per l'agente -----------------------------------
     message = (
@@ -363,19 +333,16 @@ async def run_agent(
         f"- save_csv_output(output_dir='{job_output_dir_n}')\n"
         f"Chiave opzionale: '{key}'."
     )
-    logger.info(f" message: {message}")
- 
+    logger.info("Message: %s", message)
     try:
-
-
        # Avvia una sessione e passa i contenuti nello 'state'
         session = await session_service.create_session(
-            app_name="FileApp", 
+            app_name="FileApp",
             user_id="web",
-            state={"file1_data": contentCSV, "file2_data": contentPDF}
+            state={"file1_data": content_csv, "file2_data": content_pdf}
         )
         runner = Runner(agent=processor_agent, app_name="FileApp", session_service=session_service)
-        content = types.Content(role='user', parts=[types.Part(text=message)]) 
+        content = types.Content(role='user', parts=[types.Part(text=message)])
         # Esegui l'agente
         response_text = ""
         events = runner.run_async(session_id=session.id, user_id="web", new_message=content)
@@ -385,10 +352,9 @@ async def run_agent(
                 response_text = eve.content.parts[0].text
 
         return {"response": response_text}
-        
     except Exception as e:
         logger.exception("❌ Errore durante l'esecuzione dell'agente ADK (Runner)")
-        raise HTTPException(status_code=500, detail=f"Errore agente: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore agente:{e}") from e
 
 
 
@@ -415,3 +381,4 @@ async def run_agent(
     #     "events": events[-50:]  # limito la risposta
     # }
     # return JSONResponse(content=payload, status_code=200)
+    
