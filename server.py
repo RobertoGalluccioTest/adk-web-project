@@ -242,6 +242,7 @@ async def iter_runner_events(runner, user_id: str, session_id: str, message: str
     except Exception as e:
         logger.warning("Pre-iniezione fallita (procedo comunque): %s", e)
 
+
     # 5) run_async senza contenuto
     try:
         if pre_injected:
@@ -269,17 +270,15 @@ async def run_agent(params_file: UploadFile = File(...),
     """Run the Agent passing the right set of parameters
 
     Args:
-        params_file (UploadFile, optional): _description_. Defaults to File(...).
-        pdf_file (UploadFile, optional): _description_. Defaults to File(...).
+        params_file (UploadFile, optional): CSV files with mapping. Defaults to File(...).
+        pdf_file (UploadFile, optional): PDF file containing PenTests results. Defaults to File(...).
         key (str, optional): _description_. Defaults to Form(default="").
 
     Raises:
-        HTTPException: _description_
-        HTTPException: _description_
-        HTTPException: _description_
-
+        HTTPException: raised in case of HTTP errors
+        
     Returns:
-        _type_: _description_
+        json: the response inn JSON format
     """
     logger.info("▶️ run-agent: richiesta ricevuta")
 
@@ -337,11 +336,11 @@ async def run_agent(params_file: UploadFile = File(...),
     try:
        # Avvia una sessione e passa i contenuti nello 'state'
         session = await session_service.create_session(
-            app_name="FileApp",
+            app_name="agents",
             user_id="web",
             state={"file1_data": content_csv, "file2_data": content_pdf}
         )
-        runner = Runner(agent=processor_agent, app_name="FileApp", session_service=session_service)
+        runner = Runner(agent=processor_agent, app_name="agents", session_service=session_service)
         content = types.Content(role='user', parts=[types.Part(text=message)])
         # Esegui l'agente
         response_text = ""
