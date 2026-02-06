@@ -10,4 +10,4 @@ pip install mcp==1.10
 pip install pydantic==2.10
 
 pip check 
-# dovrebbe
+# dovrebbe evidenziare nessun problema di dipendenze
