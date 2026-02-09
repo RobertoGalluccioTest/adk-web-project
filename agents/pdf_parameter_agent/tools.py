@@ -1,9 +1,10 @@
 """This is tools.py file"""
 import os
+import re
 import itertools
 import pandas as pd
 import pdfplumber
-
+from typing import List, Dict, Any, Optional
 
 # Camelot is optional and can fail on some PDFs; we try it first if available
 try:
@@ -33,72 +34,234 @@ def load_parameter_table(file_path: str):
     return df.to_dict(orient="records")
 
 
-def extract_pdf_tables(pdf_path: str, table_indexes: list | None = None):
-    """
-    Extract exactly two tables from a PDF.
-    Returns dict {"table1": list[dict], "table2": list[dict]}.
 
-    Heuristic:
-    - Try Camelot with flavor="lattice" (best on properly bordered tables).
-    - Fallback to pdfplumber.
-    - If multiple tables are detected, pick first two or by provided indexes.
+
+def _normalize_space_and_chars(s: str) -> str:
     """
+    Normalizza stringhe per confronti robusti:
+    - sostituisce NBSP e simili con spazio standard,
+    - rimuove caratteri non stampabili,
+    - collassa spazi multipli in uno,
+    - trim,
+    - casefold (case-insensitive robusto).
+    """
+    if s is None:
+        return ""
+    # NBSP e affini → spazio
+    s = s.replace("\u00A0", " ").replace("\u2007", " ").replace("\u202F", " ")
+    # rimuovi caratteri di controllo (eccetto newline, che poi collassiamo)
+    s = re.sub(r"[^\x20-\x7E\n]+", " ", s)
+    # collassa whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s.casefold()
+
+
+def _tokenize(s: str) -> List[str]:
+    s = _normalize_space_and_chars(s)
+    # tieni solo lettere/numeri/spazi
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s.split() if s else []
+
+
+def _jaccard_similarity(a_tokens: List[str], b_tokens: List[str]) -> float:
+    a, b = set(a_tokens), set(b_tokens)
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
+
+
+def _page_matches_title(lines: List[str],
+                        target_title: str,
+                        allow_partial: bool = True,
+                        min_token_coverage: float = 0.8,
+                        jaccard_threshold: float = 0.6) -> bool:
+    """
+    Ritorna True se la pagina contiene il titolo (con diverse tolleranze):
+    - match esatto normalizzato su una riga,
+    - match parziale (contains) se allow_partial=True,
+    - match su due righe adiacenti concatenate (titolo spezzato),
+    - Jaccard similarity su token come ultima ratio.
+    """
+    target_norm = _normalize_space_and_chars(target_title)
+    target_tokens = _tokenize(target_title)
+
+    # 1) match riga per riga
+    norm_lines = [_normalize_space_and_chars(l) for l in lines]
+    if any(l == target_norm for l in norm_lines):
+        return True
+
+    # 2) contains (parziale)
+    if allow_partial:
+        # copertura token: almeno min_token_coverage dei token target devono apparire nell'insieme della riga
+        for l in norm_lines:
+            if target_norm in l:
+                return True
+            # coverage su token
+            l_tokens = set(_tokenize(l))
+            if l_tokens:
+                covered = sum(1 for t in set(target_tokens) if t in l_tokens) / max(1, len(set(target_tokens)))
+                if covered >= min_token_coverage:
+                    return True
+
+    # 3) titolo spezzato su 2 righe: concatena righe adiacenti
+    for i in range(len(norm_lines) - 1):
+        joined = _normalize_space_and_chars(norm_lines[i] + " " + norm_lines[i + 1])
+        if joined == target_norm:
+            return True
+        if allow_partial and (target_norm in joined):
+            return True
+        # coverage token
+        j_tokens = set(_tokenize(joined))
+        if allow_partial and j_tokens:
+            covered = sum(1 for t in set(target_tokens) if t in j_tokens) / max(1, len(set(target_tokens)))
+            if covered >= min_token_coverage:
+                return True
+
+    # 4) Jaccard similarity su tutta la pagina (tutti i tokens)
+    page_tokens = set()
+    for l in norm_lines:
+        page_tokens.update(_tokenize(l))
+    if _jaccard_similarity(target_tokens, list(page_tokens)) >= jaccard_threshold:
+        return True
+
+    return False
+
+
+def extract_pdf_table_by_title(
+    pdf_path: str,
+    title: str = "ndings below are leftovers from previous tests and were automatically pulled for the current test",
+    flavor: str = "lattice",  # "lattice" o "stream"
+    required_columns: Optional[List[str]] = None,  # es. ["Severity", "Assets", "Description"]
+    allow_partial_title: bool = True,            # consente match parziale/robusto
+    min_token_coverage: float = 0.8,             # % token del titolo che devono apparire
+    jaccard_threshold: float = 0.6               # soglia similarità token su pagina
+) -> List[Dict[str, Any]]:
+    """
+    Estrae UNA SINGOLA tabella dalla pagina che contiene (robustamente) il titolo passato.
+    - Match titolo: tollerante a spazi speciali, spezzature di riga, contenuti parziali.
+    - Estrattori: Camelot (se disponibile) → fallback a pdfplumber.
+    - Se 'required_columns' è fornito, filtra e ordina tali colonne (aggiunge vuote se mancanti).
+    """
+
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    tables_as_records = []
+    # 1) Trova la pagina con il titolo (con tolleranza)
+    page_index_with_title: Optional[int] = None
+    with pdfplumber.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            # rimuovi hyphenation a capo (es. "lega-\ncy" -> "legacy")
+            text = re.sub(r"-\s*\n\s*", "", text)
+            lines = text.splitlines()
+            if _page_matches_title(
+                lines,
+                target_title=title,
+                allow_partial=allow_partial_title,
+                min_token_coverage=min_token_coverage,
+                jaccard_threshold=jaccard_threshold
+            ):
+                page_index_with_title = i
+                break
 
-    # Try Camelot if available and not explicitly disabled
+    if page_index_with_title is None:
+        raise ValueError(f"Title '{title}' not found in PDF (even with tolerant matching).")
+
+    page_num_for_camelot = page_index_with_title + 1  # Camelot usa 1-based
+
+    # 2) Prova Camelot su quella pagina
+    table_records: Optional[List[Dict[str, Any]]] = None
+
     if _CAM_AVAILABLE and not os.environ.get("FORCE_PDFPLUMBER"):
         try:
-            tables = camelot.read_pdf(pdf_path, pages="1-end", flavor="lattice")
+            tables = camelot.read_pdf(pdf_path, pages=str(page_num_for_camelot), flavor=flavor)
             for t in tables:
-                # t.df is a DataFrame with row 0 as header
                 df = t.df.copy()
                 if df.shape[0] > 1:
-                    header = df.iloc[0].tolist()
-                    data = df.iloc[1:]
+                    header = df.iloc[0].astype(str).str.strip().tolist()
+                    data = df.iloc[1:].copy()
                     data.columns = header
-                    recs = data.to_dict(orient="records")
-                    tables_as_records.append(recs)
+                    data = data.applymap(lambda v: re.sub(r"\s*\n\s*", " ", str(v)).strip())
+                    table_records = data.to_dict(orient="records")
+                    break  # prima tabella valida
         except Exception:
-            pass  # silently fallback
+            pass  # fallback a pdfplumber
 
-    # Fallback: pdfplumber
-    if len(tables_as_records) < 2:
+    # 3) Fallback: pdfplumber sulla stessa pagina
+    if table_records is None:
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                extracted = page.extract_tables()
-                for tbl in extracted or []:
-                    if not tbl or len(tbl) < 2:
-                        continue
-                    header = tbl[0]
-                    rows = tbl[1:]
-                    # Normalize header (deduplicate None, '')
-                    header = [h if h not in (None, "") else f"col_{i}" for i,
-                              h in enumerate(header)]
-                    recs = [dict(zip(header, r)) for r in rows]
-                    tables_as_records.append(recs)
+            page = pdf.pages[page_index_with_title]
+            extracted = page.extract_tables() or []
+            for tbl in extracted:
+                if not tbl or len(tbl) < 2:
+                    continue
+                header = tbl[0]
+                rows = tbl[1:]
+                # Header normalizzati e unici
+                norm_header = []
+                seen = set()
+                for i, h in enumerate(header):
+                    name = (h or "").strip()
+                    if name == "":
+                        name = f"col_{i}"
+                    while name in seen:
+                        name = f"{name}_dup"
+                    seen.add(name)
+                    norm_header.append(name)
+                # Records puliti
+                records = []
+                for r in rows:
+                    rec = {}
+                    for col, val in zip(norm_header, r):
+                        v = "" if val is None else re.sub(r"\s*\n\s*", " ", str(val)).strip()
+                        rec[col] = v
+                    records.append(rec)
+                table_records = records
+                #break  # prima tabella valida
 
-    if not tables_as_records:
-        raise ValueError("No tables detected in the PDF.")
+    if table_records is None:
+        raise ValueError(
+            f"No tables detected on the page containing the title '{title}'."
+        )
 
-    # Choose 2 tables
-    if table_indexes and len(table_indexes) == 2:
-        idx1, idx2 = table_indexes
-    else:
-        idx1, idx2 = 0, 1 if len(tables_as_records) > 1 else (0, 0)
+    # 4) (Opzionale) Filtra colonne richieste
+    if required_columns:
+        def norm(s: str) -> str:
+            return _normalize_space_and_chars(s)
 
-    if idx1 == idx2 and len(tables_as_records) > 1:
-        idx2 = 1  # ensure two distinct tables if possible
+        existing_cols = list(table_records[0].keys()) if table_records else []
 
-    try:
-        t1 = tables_as_records[idx1]
-        t2 = tables_as_records[idx2]
-    except Exception as ex:
-        raise ValueError("Could not select two tables from extracted results.") from ex
+        def map_column(existing_cols, req_col):
+            req_norm = norm(req_col)
+            # match esatto normalizzato
+            for c in existing_cols:
+                if norm(c) == req_norm:
+                    return c
+            # fallback: contenimento (asset vs assets)
+            for c in existing_cols:
+                if req_norm in norm(c) or norm(c) in req_norm:
+                    return c
+            return None
 
-    return {"table1": t1, "table2": t2}
+        col_map = {rc: map_column(existing_cols, rc) for rc in required_columns}
+
+        filtered_records = []
+        for rec in table_records:
+            filtered = {}
+            for rc in required_columns:
+                src = col_map.get(rc)
+                filtered[rc] = rec.get(src, "") if src else ""
+            filtered_records.append(filtered)
+
+        table_records = filtered_records
+
+    return table_records
+
 
 
 def combine_and_match(param_rows: list[dict],

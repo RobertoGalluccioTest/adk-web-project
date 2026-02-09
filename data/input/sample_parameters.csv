@@ -1,0 +1,16 @@
+Assets;Reference Squad;Azure Team ID;Product Owner
+https://intra-app-gateway.fakecorp.local/admin/InternalService;Blue Account Squad;BAC9876_T;Martina Valli
+https://docs-hub.fakecorp.local/office/preview/render;Risk Val Squad;DRJ4698_W;Paolo Ferri
+https://api.fakecorp.local/user/profile?id=102;Open Bank Squad;OLW1223_A;Sara Nocetti
+https://legacy-auth.fakecorp.local;Refuse Squad;GRZ2313_G;Luca Marin
+https://app.fakecorp.local/api/orders?order_id=abc;Investment Squad;LKW1233_F;Giulia Benassi
+https://billing.fakecorp.local/api/v2/invoice?id=9912;Finance Ops Squad;FIN8821_K;Davide Orlandi
+https://intra-hr.fakecorp.local/employee/detail?uid=552;People Care Squad;HRS4421_M;Elena Spadoni
+https://reports.fakecorp.local/export/monthly;Analytics Squad;ANL9983_R;Marco Berti
+https://security.fakecorp.local/api/v3/check?token=xy22;Cyber Defense Squad;SEC7312_P;Chiara Fontani
+https://workflow.fakecorp.local/process/start?id=77;Automation Squad;AUTO5561_L;Simone Verdini
+https://datahub.fakecorp.local/query/run?dataset=core;Data Platform Squad;DPL6642_V;Nadia Corvi
+https://mobile-api.fakecorp.local/v1/session/refresh;Mobile App Squad;MOB2219_Q;Roberto Sani
+https://content.fakecorp.local/preview/article?id=70012;Content Squad;CNT8734_S;Francesca Lodi
+https://gateway.fakecorp.local/proxy/service?path=/v1/update;Integration Squad;INT5520_Z;Matteo Guidi
+https://authz.fakecorp.local/permissions/check?user=adm33;IAM Squad;IAM4412_B;Irene Paglia

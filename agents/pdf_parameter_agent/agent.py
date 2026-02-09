@@ -1,12 +1,12 @@
 """This is the Agent-py file which creates the agent as processor_agent"""
 import os
 from google.adk.agents import Agent
-# from .tools import (
-#     load_parameter_table,
-#     extract_pdf_tables,
-#     combine_and_match,
-#     save_csv_output
-# )
+from .tools import (
+    load_parameter_table,
+    extract_pdf_table_by_title,
+    combine_and_match,
+    save_csv_output
+)
 
 def _load_prompt() -> str:
     """Load a prompt from a file.
@@ -16,7 +16,7 @@ def _load_prompt() -> str:
     """
     pwd = os.path.dirname(__file__)
     prompt_text = ""
-    with open(os.path.join(pwd, "prompt-no-tools.md"), "r", encoding="utf-8") as f:
+    with open(os.path.join(pwd, "prompt.md"), "r", encoding="utf-8") as f:
         prompt_text = f.read()
     return prompt_text
 
@@ -26,10 +26,10 @@ processor_agent = Agent(
     description="Merges parameter table with two PDF tables and saves CSV",
     model="gemini-2.5-flash",
     instruction=_load_prompt(),
-    # tools=[
-    #     load_parameter_table,
-    #     extract_pdf_tables,
-    #     combine_and_match,
-    #     save_csv_output
-    # ],
+     tools=[
+          load_parameter_table,
+          extract_pdf_table_by_title,
+          combine_and_match,
+          save_csv_output
+     ]
 )
