@@ -328,7 +328,7 @@ async def run_agent(params_file: UploadFile = File(...),
         "Fondi la tabella parametri con le due tabelle del PDF e salva un CSV.\n"
         f"- load_parameter_table(params_path_n='{params_path_n}')\n"
         f"- extract_pdf_tables(pdf_path_n='{pdf_path_n}')\n"
-        f"- combine_and_match(...)\n"
+        f"- combine_and_match(params_path_n='{params_path_n},pdf_path_n='{pdf_path_n},{key})\n"
         f"- save_csv_output(output_dir='{job_output_dir_n}')\n"
         f"Chiave opzionale: '{key}'."
     )
