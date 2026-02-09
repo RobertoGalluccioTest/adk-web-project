@@ -8,13 +8,10 @@ from google.adk.cli.fast_api import get_fast_api_app
 from google.genai import types
 
 
-
-
 app: FastAPI = get_fast_api_app(
     agents_dir="./agents/agents", # Cartella contenente i tuoi agenti
     web=True # Abilita anche la Web UI di debug
 )
-
 session_service = InMemorySessionService()
 
 
@@ -37,6 +34,7 @@ async def process_files(
         csv_path = os.path.join(tmp, mapping_csv.filename)
         with open(pdf_path, "wb") as f:
             f.write(await pdf.read())
+        
         with open(csv_path, "wb") as f:
             f.write(await mapping_csv.read())
         output_path = os.path.join(tmp, "output.csv")
@@ -45,13 +43,24 @@ async def process_files(
         #     "mapping_csv": csv_path,
         #     "output_path": output_path
         # })
+    pdf_path_n = pdf_path.replace("\\","/")
+    csv_path_n =csv_path.replace("\\","/")
+    output_path_n = output_path.replace("\\","/")
+    
+    msg = (
+        "Merge csv table with PDF Vulnerability Table and save a CSV.\n"
+        f"- pdf_text_tool(pdf_path='{pdf_path_n}')\n"
+        f"- csv_mapping_tool(csv_path='{csv_path_n}')\n"
+        f"- enrichment_tool(...)\n"
+        f"- csv_export_tool(output_dir='{output_path_n}')\n"
+    )
     session = await session_service.create_session(
         app_name="agents",
         user_id="web",
-        state={"file1_data": pdf_path, "file2_data": csv_path}
+        state={"pdf_path": pdf_path_n, "csv_path": csv_path_n}
     )
     runner = Runner(agent=pentest_agent, app_name="agents", session_service=session_service)
-    content = types.Content(role='user', parts=[types.Part(text="")])
+    content = types.Content(role='user', parts=[types.Part(text=msg)])
     # Esegui l'agente
     response_text = ""
     events = runner.run_async(session_id=session.id, user_id="web", new_message=content)
@@ -59,5 +68,4 @@ async def process_files(
         if eve.is_final_response():
             #if eve.content and eve.content.parts:
             response_text = eve.content.parts[0].text
-
     return {"response": response_text}
