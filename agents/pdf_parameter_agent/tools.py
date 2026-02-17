@@ -5,6 +5,7 @@ import itertools
 import pandas as pd
 import pdfplumber
 from typing import List, Dict, Any, Optional
+from collections import defaultdict
 
 # Camelot is optional and can fail on some PDFs; we try it first if available
 try:
@@ -263,69 +264,127 @@ def extract_pdf_table_by_title(
     return table_records
 
 
-
-def combine_and_match(param_rows: list[dict],
-                      table1_rows: list[dict],
-                      table2_rows: list[dict],
-                      key: str | None = None):
+def _needs_semicolon_fix(rows: List[Dict]) -> bool:
     """
-    Deterministically merge:
-    - Identify a join key:
-        1) If key provided and present in param_rows columns -> use it.
-        2) Else use the first common column name shared by param_rows 
-        and table1_rows or table2_rows.
-        3) Else fallback to the first column of param_rows.
-    - Build merged rows: param + best match from t1 + best match from t2.
-      Columns from t1 prefixed as 't1_' and from t2 as 't2_' to avoid collisions.
-    Returns: list[dict]
+    True se le righe hanno un singolo header che contiene ';'
+    (es. {'Assets;Reference Squad;Azure Team ID;Product Owner': 'A01;TeamX;123;Marco'})
     """
-    def cols(rows):
-        return set(itertools.chain.from_iterable(r.keys() for r in rows)) if rows else set()
+    if not rows:
+        return False
+    keys = list(rows[0].keys())
+    return len(keys) == 1 and isinstance(keys[0], str) and ';' in keys[0]
 
-    param_cols = cols(param_rows)
-    t1_cols = cols(table1_rows)
-    t2_cols = cols(table2_rows)
+def _reconstruct_rows_from_semicolon(rows: List[Dict]) -> List[Dict]:
+    """
+    Ricostruisce righe quando header e valori sono concatenati con ';'.
+    - Spezza l'header sul ';'
+    - Spezza ogni valore di riga sul ';'
+    - Mappa posizione a posizione (padding se necessario)
+    - Trimma spazi
+    """
+    if not rows:
+        return rows
 
-    join_key = None
-    if key and key in param_cols:
-        join_key = key
-    else:
-        common = (param_cols & t1_cols) or (param_cols & t2_cols)
-        if common:
-            join_key = sorted(common)[0]
-        elif param_cols:
-            join_key = sorted(param_cols)[0]
+    single_header = list(rows[0].keys())[0]
+    raw_headers = single_header.split(';')
+    headers = [h.strip() for h in raw_headers]
 
-    # Index tables by join_key for quick lookup (exact match)
-    def index_by(rows, k):
-        idx = {}
+    fixed_rows: List[Dict] = []
+    for r in rows:
+        raw_value = r.get(single_header, "")
+        parts = [] if raw_value is None else str(raw_value).split(';')
+        parts = [p.strip() for p in parts]
+
+        # Padding/trunc in caso di mismatch
+        if len(parts) < len(headers):
+            parts = parts + [""] * (len(headers) - len(parts))
+        elif len(parts) > len(headers):
+            parts = parts[:len(headers)]
+
+        fixed_rows.append(dict(zip(headers, parts)))
+
+    return fixed_rows
+
+def _normalize_key_value(v, case_insensitive: bool = False):
+    """
+    Normalizza il valore della chiave:
+    - converte None/''/'   ' in None (chiave non valida)
+    - trim degli spazi
+    - opzionale casefold per case-insensitive
+    """
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip()
+        if s == "":
+            return None
+        return s.casefold() if case_insensitive else s
+    return v  # numeri/altro pass-through
+
+
+
+def combine_and_match(param_rows: List[Dict],
+                      table1_rows: List[Dict],
+                      key: Optional[str] = None,
+                      case_insensitive: bool = False) -> List[Dict]:
+    join_key = (key or "Assets").strip()
+
+    # --- Normalizza i nomi delle colonne (trim) ---
+    def trim_keys(rows: List[Dict]) -> List[Dict]:
+        fixed = []
         for r in rows:
-            v = r.get(k)
-            idx.setdefault(v, []).append(r)
-        return idx
+            fixed.append({(k.strip() if isinstance(k, str) else k): v for k, v in r.items()})
+        return fixed
 
-    t1_idx = index_by(table1_rows, join_key) if join_key else {}
-    t2_idx = index_by(table2_rows, join_key) if join_key else {}
+    param_rows = trim_keys(param_rows)
+    table1_rows = trim_keys(table1_rows)
 
-    merged = []
-    for prow in param_rows:
-        keyval = prow.get(join_key) if join_key else None
-        t1_matches = t1_idx.get(keyval, [None])
-        t2_matches = t2_idx.get(keyval, [None])
+    # --- Normalizza il valore della chiave (trim e opzionale casefold) ---
+    def norm_val(v):
+        if v is None:
+            return None
+        if isinstance(v, str):
+            s = v.strip()
+            if s == "":
+                return None
+            return s.casefold() if case_insensitive else s
+        return v
 
-        # take cartesian product so we don't lose multi-matches
-        for m1 in (t1_matches or [None]):
-            for m2 in (t2_matches or [None]):
-                rec = dict(prow)  # base
-                if m1:
-                    for k, v in m1.items():
-                        rec[f"t1_{k}"] = v
-                if m2:
-                    for k, v in m2.items():
-                        rec[f"t2_{k}"] = v
-                merged.append(rec)
 
-    return merged
+    # --- Controllo esistenza chiave (INNER JOIN: se manca in uno, nessun match) ---
+    param_cols = {k for r in param_rows for k in r}
+    pdf_cols   = {k for r in table1_rows for k in r}
+    if len(param_cols) == 1 and ";" in list(param_cols)[0]:
+        param_cols = set(list(param_cols)[0].split(";"))
+    if len(pdf_cols) == 1 and ";" in list(pdf_cols)[0]:
+        pdf_cols = set(list(pdf_cols)[0].split(";"))
+
+    if join_key not in param_cols or join_key not in pdf_cols:
+        return []  # niente match possibili
+
+    # --- Indicizza CSV su chiave normalizzata, scartando righe senza chiave ---
+    index = defaultdict(list)
+    for row in param_rows:
+        kv = norm_val(row.get(join_key))
+        if kv is None:
+            continue
+        index[kv].append(row)
+
+    # --- INNER JOIN: tieni solo le righe PDF con match ---
+    out: List[Dict] = []
+    for pdf_row in table1_rows:
+        kv = norm_val(pdf_row.get(join_key))
+        if kv is None:
+            continue
+        matches = index.get(kv, [])
+        if not matches:
+            continue
+        for m in matches:
+            merged = dict(norm_val(pdf_row))
+            for ck, cv in m.items():
+                merged[f"csv_{ck}"] = cv
+            out.append(merged)
+    return out
 
 
 def save_csv_output(records: list[dict], output_path: str = "data/output/result.csv"):
