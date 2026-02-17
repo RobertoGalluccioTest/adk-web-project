@@ -14,9 +14,6 @@ app: FastAPI = get_fast_api_app(
 )
 session_service = InMemorySessionService()
 
-
-import os
-
 def save_text_to_file(text: str, folder_path: str, filename: str) -> str:
     """
     Salva un testo in un file all'interno di una cartella. 
